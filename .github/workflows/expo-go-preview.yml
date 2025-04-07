@@ -2,10 +2,12 @@ name: Expo Go QR Preview
 
 on:
   pull_request:
+    types: [opened, synchronize]
 
 jobs:
   preview:
     runs-on: ubuntu-latest
+    timeout-minutes: 60  # Prevent hanging workflows
     permissions:
       contents: read
       pull-requests: write
@@ -28,46 +30,79 @@ jobs:
         run: pnpm install
 
       - name: Install QR dependencies
-        run: |
-          pnpm install qrcode # Proper QR code image generator
-          pnpm install -g serve # optional if needed later
+        run: pnpm install qrcode
 
-      - name: Start Expo dev server (background)
+      - name: Start Expo dev server and generate QR
+        id: expo_server
         run: |
-          nohup pnpm dlx expo start --tunnel --non-interactive > expo.log 2>&1 &
-          sleep 30  # Give Expo time to initialize
-
-      - name: Extract Expo QR URL
-        id: extract_qr
-        run: |
-          echo "EXPO_URL=$(grep -o 'exp:\/\/[^ ]*' expo.log | head -n 1)" >> $GITHUB_ENV
-          echo "QR_TEXT=exp://$(echo $EXPO_URL | cut -d'/' -f3-)" >> $GITHUB_ENV
-
-      - name: Generate QR image
-        run: |
+          # Start Expo in tunnel mode and capture URL
+          echo "Starting Expo server..."
+          expo_url=$(pnpm dlx expo start --tunnel --non-interactive 2>&1 | tee expo.log | grep -o 'exp://[^ ]*' | head -n 1)
+          
+          # Wait for URL to be available
+          counter=0
+          while [ -z "$expo_url" ] && [ $counter -lt 30 ]; do
+            sleep 5
+            expo_url=$(grep -o 'exp://[^ ]*' expo.log | head -n 1)
+            counter=$((counter+1))
+            echo "Attempt $counter to get Expo URL..."
+          done
+          
+          if [ -z "$expo_url" ]; then
+            echo "::error::Failed to get Expo URL"
+            exit 1
+          fi
+          
+          echo "EXPO_URL=$expo_url" >> $GITHUB_ENV
+          echo "QR_TEXT=$expo_url" >> $GITHUB_ENV
+          
+          # Generate QR code
           mkdir -p qr
-          node -e "require('qrcode').toFile('./qr/expo-qr.png', '${{ env.QR_TEXT }}', { margin: 1, width: 400 }, (err) => { if (err) throw err })"
+          node -e "
+            const qr = require('qrcode');
+            qr.toFile(
+              './qr/expo-qr.png', 
+              process.env.QR_TEXT, 
+              { 
+                margin: 2,
+                width: 300,
+                errorCorrectionLevel: 'H'
+              }, 
+              (err) => { if (err) throw err }
+            );
+          "
+          
+          # Keep the server running (this will block the step)
+          echo "Expo server is running..."
+          sleep infinity
 
       - name: Upload QR image
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: expo-qr
           path: qr/expo-qr.png
 
       - name: Base64 encode QR image
+        if: always()
         id: qr_base64
         run: |
           echo "QR_BASE64=$(base64 -w 0 qr/expo-qr.png)" >> $GITHUB_OUTPUT
 
       - name: Create QR comment
+        if: always()
         uses: thollander/actions-comment-pull-request@v2
         with:
           message: |
-            📱 Expo Go Preview is ready!
-
-            Scan the QR code below with the [Expo Go](https://expo.dev/client) app to view this PR build.
-
+            📱 **Expo Go Preview**
+            
+            ### Scan this QR code with [Expo Go](https://expo.dev/client):
             <img src="data:image/png;base64,${{ steps.qr_base64.outputs.QR_BASE64 }}" width="200" alt="Expo QR Code"/>
-
-            Or open this URL in Expo Go: `${{ env.EXPO_URL }}`
+            
+            ### Or open this link on your device:
+            `${{ env.EXPO_URL }}`
+            
+            _Note: This preview will only work while this GitHub Actions job is running (typically 60 minutes)._
+            
+            _To keep the preview available longer, you may need to run `expo start --tunnel` locally._
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
