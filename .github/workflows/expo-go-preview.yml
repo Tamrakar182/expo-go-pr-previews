@@ -17,25 +17,30 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 18
-          cache: npm
+          node-version: 20
+          cache: pnpm
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v3
+        with:
+          version: 10.6.4
 
       - name: Install dependencies
-        run: npm install
+        run: pnpm install
 
       - name: Authenticate with Expo
         uses: expo/expo-github-action@v8
         with:
           token: ${{ secrets.EXPO_TOKEN }}
 
-      - name: Install QR dependencies globally
+      - name: Install QR dependencies
         run: |
-          npm install -g qrcode-terminal
-          npm install -g serve # optional
+          pnpm install -g qrcode-terminal
+          pnpm install -g serve # optional if needed later
 
       - name: Start Expo dev server (background)
         run: |
-          nohup npx expo start --tunnel --non-interactive > expo.log 2>&1 &
+          nohup pnpm dlx expo start --tunnel --non-interactive > expo.log 2>&1 &
           sleep 30  # Give Expo time to initialize
 
       - name: Extract Expo QR URL
@@ -46,7 +51,7 @@ jobs:
       - name: Generate QR image
         run: |
           mkdir qr
-          npx qrcode-terminal "$EXPO_URL" --path=qr/expo-qr.png
+          pnpm dlx qrcode-terminal "$EXPO_URL" --path=qr/expo-qr.png
         env:
           EXPO_URL: ${{ env.EXPO_URL }}
 
@@ -64,8 +69,7 @@ jobs:
 
             Scan the QR code below with the [Expo Go](https://expo.dev/client) app to view this PR build.
 
-            ⚠️ You may need to click "Artifacts" in the build summary to download the QR image:
-            [Download QR](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts)
+            ![Expo QR](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts)
 
             Or open manually: `${{ env.EXPO_URL }}`
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
