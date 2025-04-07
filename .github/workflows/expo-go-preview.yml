@@ -29,7 +29,7 @@ jobs:
 
       - name: Install QR dependencies
         run: |
-          pnpm install -g qrcode-terminal
+          pnpm install qrcode # Proper QR code image generator
           pnpm install -g serve # optional if needed later
 
       - name: Start Expo dev server (background)
@@ -41,19 +41,23 @@ jobs:
         id: extract_qr
         run: |
           echo "EXPO_URL=$(grep -o 'exp:\/\/[^ ]*' expo.log | head -n 1)" >> $GITHUB_ENV
+          echo "QR_TEXT=exp://$(echo $EXPO_URL | cut -d'/' -f3-)" >> $GITHUB_ENV
 
       - name: Generate QR image
         run: |
-          mkdir qr
-          pnpm dlx qrcode-terminal "$EXPO_URL" --path=qr/expo-qr.png
-        env:
-          EXPO_URL: ${{ env.EXPO_URL }}
+          mkdir -p qr
+          node -e "require('qrcode').toFile('./qr/expo-qr.png', '${{ env.QR_TEXT }}', { margin: 1, width: 400 }, (err) => { if (err) throw err })"
 
       - name: Upload QR image
         uses: actions/upload-artifact@v4
         with:
           name: expo-qr
           path: qr/expo-qr.png
+
+      - name: Base64 encode QR image
+        id: qr_base64
+        run: |
+          echo "QR_BASE64=$(base64 -w 0 qr/expo-qr.png)" >> $GITHUB_OUTPUT
 
       - name: Create QR comment
         uses: thollander/actions-comment-pull-request@v2
@@ -63,7 +67,7 @@ jobs:
 
             Scan the QR code below with the [Expo Go](https://expo.dev/client) app to view this PR build.
 
-            ![Expo QR](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts)
+            <img src="data:image/png;base64,${{ steps.qr_base64.outputs.QR_BASE64 }}" width="200" alt="Expo QR Code"/>
 
-            Or open manually: `${{ env.EXPO_URL }}`
+            Or open this URL in Expo Go: `${{ env.EXPO_URL }}`
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
