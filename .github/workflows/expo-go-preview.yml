@@ -1,0 +1,75 @@
+name: Expo Go QR Preview
+
+on:
+  pull_request:
+
+jobs:
+  preview:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18
+          cache: pnpm
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v2
+        with:
+          version: 8
+
+      - name: Install dependencies
+        run: pnpm install
+
+      - name: Authenticate with Expo
+        uses: expo/expo-github-action@v8
+        with:
+          token: ${{ secrets.EXPO_TOKEN }}
+
+      - name: Install QR dependencies
+        run: |
+          pnpm install -g qrcode-terminal
+          pnpm install -g serve # optional if needed later
+
+      - name: Start Expo dev server (background)
+        run: |
+          nohup pnpm dlx expo start --tunnel --non-interactive > expo.log 2>&1 &
+          sleep 30  # Give Expo time to initialize
+
+      - name: Extract Expo QR URL
+        id: extract_qr
+        run: |
+          echo "EXPO_URL=$(grep -o 'exp:\/\/[^ ]*' expo.log | head -n 1)" >> $GITHUB_ENV
+
+      - name: Generate QR image
+        run: |
+          mkdir qr
+          pnpm dlx qrcode-terminal "$EXPO_URL" --path=qr/expo-qr.png
+        env:
+          EXPO_URL: ${{ env.EXPO_URL }}
+
+      - name: Upload QR image
+        uses: actions/upload-artifact@v4
+        with:
+          name: expo-qr
+          path: qr/expo-qr.png
+
+      - name: Create QR comment
+        uses: thollander/actions-comment-pull-request@v2
+        with:
+          message: |
+            📱 Expo Go Preview is ready!
+
+            Scan the QR code below with the [Expo Go](https://expo.dev/client) app to view this PR build.
+
+            ![Expo QR](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts)
+
+            Or open manually: `${{ env.EXPO_URL }}`
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
