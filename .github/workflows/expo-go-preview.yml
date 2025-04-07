@@ -1,4 +1,4 @@
-name: Expo Go QR Preview
+name: Expo QR Code Preview
 
 on:
   pull_request:
@@ -7,102 +7,111 @@ on:
 jobs:
   preview:
     runs-on: ubuntu-latest
-    timeout-minutes: 60  # Prevent hanging workflows
     permissions:
-      contents: read
       pull-requests: write
 
     steps:
-      - name: Checkout code
+      - name: 🏗 Setup repo
         uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GH_PAT }}
 
-      - name: Setup Node.js
+      - name: 🏗 Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22.x
 
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v3
+      - name: 📦 Install dependencies
+        run: npm install
+
+      - name: 🏗 Setup EAS
+        uses: expo/expo-github-action@v8
         with:
-          version: 10.6.4
+          eas-version: latest
+          token: ${{ secrets.EXPO_TOKEN }}
 
-      - name: Install dependencies
-        run: pnpm install
-
-      - name: Install QR dependencies
-        run: pnpm install qrcode
-
-      - name: Start Expo dev server and generate QR
-        id: expo_server
+      - name: 🚀 Create preview and extract details
+        id: create-preview
         run: |
-          # Start Expo in tunnel mode and capture URL
-          echo "Starting Expo server..."
-          expo_url=$(pnpm dlx expo start --tunnel --non-interactive 2>&1 | tee expo.log | grep -o 'exp://[^ ]*' | head -n 1)
-          
-          # Wait for URL to be available
-          counter=0
-          while [ -z "$expo_url" ] && [ $counter -lt 30 ]; do
-            sleep 5
-            expo_url=$(grep -o 'exp://[^ ]*' expo.log | head -n 1)
-            counter=$((counter+1))
-            echo "Attempt $counter to get Expo URL..."
-          done
-          
-          if [ -z "$expo_url" ]; then
-            echo "::error::Failed to get Expo URL"
+          OUTPUT=$(eas update --auto --branch ${{ github.event.pull_request.head.ref }})
+          echo "$OUTPUT"
+          # Extract the Update Group ID (groupId)
+          GROUP_ID=$(echo "$OUTPUT" | grep -oP 'Update group ID\s+\K[\w-]+')
+          # Extract the EAS Dashboard URL
+          EAS_DASHBOARD_URL=$(echo "$OUTPUT" | grep -oP 'EAS Dashboard\s+\Khttps://expo.dev/accounts/[^ ]+')
+          # Parse the account name and project slug dynamically
+          ACCOUNT_NAME=$(echo "$EAS_DASHBOARD_URL" | awk -F'/' '{print $(NF-3)}')
+          PROJECT_SLUG=$(echo "$EAS_DASHBOARD_URL" | awk -F'/' '{print $(NF-1)}')
+          # Fetch the correct appId using `eas project:info`
+          echo "Fetching EAS Project Info..."
+          PROJECT_INFO=$(eas project:info)
+          echo "EAS Project Info Output: $PROJECT_INFO"
+          # Extract appId using grep instead of jq
+          APP_ID=$(echo "$PROJECT_INFO" | grep -oP 'ID\s+\K[\w-]+')
+          # Extract the last update timestamp (from commit timestamp)
+          COMMIT_TIMESTAMP=$(echo "$OUTPUT" | grep -oP 'Commit\s+\K[\w\d]+')
+          # Convert timestamp to readable UTC format
+          LAST_UPDATED=$(date -u -d "@$(git show -s --format=%ct $COMMIT_TIMESTAMP)" "+%b %-d, %Y %-I:%M%p UTC")
+          if [ -z "$APP_ID" ] || [ -z "$GROUP_ID" ] || [ -z "$ACCOUNT_NAME" ] || [ -z "$PROJECT_SLUG" ] || [ -z "$LAST_UPDATED" ]; then
+            echo "❌ Failed to extract required values."
             exit 1
           fi
-          
-          echo "EXPO_URL=$expo_url" >> $GITHUB_ENV
-          echo "QR_TEXT=$expo_url" >> $GITHUB_ENV
-          
-          # Generate QR code
-          mkdir -p qr
-          node -e "
-            const qr = require('qrcode');
-            qr.toFile(
-              './qr/expo-qr.png', 
-              process.env.QR_TEXT, 
-              { 
-                margin: 2,
-                width: 300,
-                errorCorrectionLevel: 'H'
-              }, 
-              (err) => { if (err) throw err }
+          DEEP_LINK="exp+://expo-development-client/?url=https://u.expo.dev/$APP_ID/group/$GROUP_ID"
+          UPDATE_LINK="https://expo.dev/accounts/$ACCOUNT_NAME/projects/$PROJECT_SLUG/updates/$GROUP_ID"
+          QR_CODE_URL="https://qr.expo.dev/eas-update?slug=exp&projectId=$APP_ID&groupId=$GROUP_ID&host=u.expo.dev&scale=2"
+          echo "Deep Link: $DEEP_LINK"
+          echo "UPDATE_LINK=$UPDATE_LINK" >> $GITHUB_ENV
+          echo "QR_CODE_URL=$QR_CODE_URL" >> $GITHUB_ENV
+          echo "LAST_UPDATED=$LAST_UPDATED" >> $GITHUB_ENV
+      - name: 📢 Update or Post Expo QR Code in PR
+        if: success()
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const updateLink = process.env.UPDATE_LINK;
+            const qrCodeUrl = process.env.QR_CODE_URL;
+            const lastUpdated = process.env.LAST_UPDATED;
+            if (!updateLink || !qrCodeUrl || !lastUpdated) {
+              console.error("Missing update link, QR code URL, or last updated timestamp.");
+              return;
+            }
+            const { owner, repo, number } = context.issue;
+            const commentIdentifier = "🚀 **Expo Preview Ready!**"; // Unique identifier
+            // Generate comment body with QR Code
+            const commentBody = `
+            🚀 **Expo Preview Ready!** — *Updated: ${lastUpdated}*  
+            📱 Scan the QR code below to test on **Expo Dev Client**:  
+            ![Expo QR Code](${qrCodeUrl})  
+            <a href="${updateLink}" target="_blank"><strong>Open Expo Update ↗︎</strong></a>  
+            ---
+            🎩 *Made by [Torii Studio](https://torii.studio)*
+            `;
+            // Fetch existing comments
+            const comments = await github.rest.issues.listComments({
+              owner,
+              repo,
+              issue_number: number
+            });
+            const existingComment = comments.data.find(comment =>
+              comment.body.includes(commentIdentifier)
             );
-          "
-          
-          # Keep the server running (this will block the step)
-          echo "Expo server is running..."
-          sleep infinity
-
-      - name: Upload QR image
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: expo-qr
-          path: qr/expo-qr.png
-
-      - name: Base64 encode QR image
-        if: always()
-        id: qr_base64
-        run: |
-          echo "QR_BASE64=$(base64 -w 0 qr/expo-qr.png)" >> $GITHUB_OUTPUT
-
-      - name: Create QR comment
-        if: always()
-        uses: thollander/actions-comment-pull-request@v2
-        with:
-          message: |
-            📱 **Expo Go Preview**
-            
-            ### Scan this QR code with [Expo Go](https://expo.dev/client):
-            <img src="data:image/png;base64,${{ steps.qr_base64.outputs.QR_BASE64 }}" width="200" alt="Expo QR Code"/>
-            
-            ### Or open this link on your device:
-            `${{ env.EXPO_URL }}`
-            
-            _Note: This preview will only work while this GitHub Actions job is running (typically 60 minutes)._
-            
-            _To keep the preview available longer, you may need to run `expo start --tunnel` locally._
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+            if (existingComment) {
+              // Update the existing comment
+              await github.rest.issues.updateComment({
+                owner,
+                repo,
+                comment_id: existingComment.id,
+                body: commentBody
+              });
+              console.info("✅ Updated existing Expo preview comment.");
+            } else {
+              // Create a new comment
+              await github.rest.issues.createComment({
+                owner,
+                repo,
+                issue_number: number,
+                body: commentBody
+              });
+              console.info("✅ Created new Expo preview comment.");
+            }
